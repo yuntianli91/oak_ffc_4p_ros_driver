@@ -8,7 +8,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-g -O3 -Wno-write-strings -Wno-format-overflow ")
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
-
+set(cv_bridge_DIR "/usr/local/share/cv_bridge/cmake")
 find_package(catkin REQUIRED COMPONENTS
   cv_bridge
   image_transport
@@ -27,11 +27,11 @@ catkin_package(
 #  DEPENDS system_lib
 )
 
-
 find_package(spdlog REQUIRED)
 find_package(fmt REQUIRED)
 
 #Find opencv
+set(OpenCV_DIR "/home/pml-omni/OpenCV/release")
 find_package(OpenCV 4.2 REQUIRED )
 # find_package(Sanitizers)
 
@@ -42,12 +42,12 @@ include_directories(
   include
   ${catkin_INCLUDE_DIRS}
 )
-
+# 更改为对应的路径
 link_directories(
-  /root/3rd_party/depthai-core-v2.26.0/build/
-  /root/3rd_party/XLink/build
-  /root/3rd_party/spdlog-1.8.2/build
-  /root/3rd_party/fmt-7.1.3/build
+  /home/pml-omni/3rdParty/depthai-core/build/
+  /home/pml-omni/3rdParty/XLink/build
+  /home/pml-omni/3rdParty/spdlog/build
+  /home/pml-omni/3rdParty/fmt/build
 )
 
 add_executable(${PROJECT_NAME}_test test.cpp)
@@ -66,8 +66,8 @@ target_link_libraries(${PROJECT_NAME}_test
 target_include_directories(${PROJECT_NAME}_test PUBLIC
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
-  /root/3rd_party/depthai-core-v2.26.0/build/install/include
-  /root/3rd_party/XLink/build/install/include
+  /home/pml-omni/3rdParty/depthai-core/include
+  /home/pml-omni/3rdParty/XLink/build/install/include
 )
 
 add_library(${PROJECT_NAME}_lib STATIC

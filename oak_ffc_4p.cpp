@@ -1,9 +1,7 @@
 #pragma once
 #include "oak_ffc_4p.h"
 
-#include <cv_bridge/cv_bridge.h>
 #include <fcntl.h>
-#include <image_transport/image_transport.h>
 #include <linux/videodev2.h>
 #include <memory.h>
 #include <ros/ros.h>
@@ -40,45 +38,51 @@ FFC4PDriver::FFC4PDriver(std::shared_ptr<ros::NodeHandle>& nh) {
   }
   cv::setNumThreads(1);
   this->ros_node_ = nh;
-  ROS_INFO("FFC 4P Device Detecting\n");
+  this->it_ptr_ = 
+    std::make_shared<image_transport::ImageTransport>(*(this->ros_node_));
+
+  ROS_INFO("FFC 4P Device Detecting");
   auto deviceInfoVec = dai::Device::getAllAvailableDevices();
+  // set usbspeed to 10Gbits
   const auto usbSpeed = dai::UsbSpeed::SUPER_PLUS;
+  // set OpenVino version to support NN model
   auto openVinoVersion = dai::OpenVINO::Version::VERSION_2021_4;
   if (deviceInfoVec.size() != 1) {
-    ROS_ERROR("Multiple devices or No device detected\n");
+    ROS_ERROR("Multiple devices or No device detected");
     this->device_is_detected_ = 0;
     return;
   }
   this->device_ = std::make_unique<dai::Device>(
       openVinoVersion, deviceInfoVec.front(), usbSpeed);
   if (device_ == nullptr) {
-    ROS_ERROR("device init failed\n");
+    ROS_ERROR("Device init failed");
     return;
   }
+
   // print device infomation
-  std::cout << "===Connected to " << deviceInfoVec.front().getMxId()
-            << std::endl;
-  auto mxId = this->device_->getMxId();
   auto cameras = this->device_->getConnectedCameras();
   auto usbSpeed_dev = this->device_->getUsbSpeed();
   auto eepromData = this->device_->readCalibration2().getEepromData();
-  std::cout << "   >>> MXID:" << mxId << std::endl;
-  std::cout << "   >>> Num of cameras:" << cameras.size() << std::endl;
-  std::cout << "   >>> USB speed:" << usbSpeed_dev << std::endl;
-  if (eepromData.boardName != "") {
-    std::cout << "   >>> Board name:" << eepromData.boardName << std::endl;
-  }
+  std::cout << "[OAK Driver] Device number: " << deviceInfoVec.front().getMxId()
+            << std::endl;
   if (eepromData.productName != "") {
-    std::cout << "   >>> Product name:" << eepromData.productName << std::endl;
+    std::cout << "[OAK Driver] Product name:" << eepromData.productName << std::endl;
   }
+  if (eepromData.boardName != "") {
+    std::cout << "[OAK Driver] Board name:" << eepromData.boardName << std::endl;
+  }
+  std::cout << "[OAK Driver] Num of cameras:" << cameras.size() << std::endl;
+  std::cout << "[OAK Driver] USB speed:" << usbSpeed_dev << std::endl;
+
   this->device_is_detected_ = 1;
-  ROS_INFO("FFC 4P Device detected!\n");
+  ROS_INFO("FFC 4P Device detected!");
   this->GetParameters(*nh);
 }
 
 FFC4PDriver::~FFC4PDriver() { this->device_->close(); }
 
 void FFC4PDriver::GetParameters(ros::NodeHandle& nh) {
+  nh.getParam("show_img_local", this->module_config_.show_img_local);
   nh.getParam("fps", this->module_config_.fps);
   nh.getParam("rgb", this->module_config_.rgb);
   nh.getParam("resolution", this->module_config_.resolution);
@@ -93,10 +97,12 @@ void FFC4PDriver::GetParameters(ros::NodeHandle& nh) {
               this->module_config_.sharpness_calibration_mode);
   nh.getParam("compressed_mode", this->module_config_.compressed_mode);
   nh.getParam("enable_upside_down", this->module_config_.enable_upside_down);
+
   if (this->module_config_.rgb) {
+    // check resolution
     if (color_res_opts.find(this->module_config_.resolution) ==
         color_res_opts.end()) {
-      ROS_ERROR("Resolution %d not supported, use default\n",
+      ROS_ERROR("Resolution %d not supported, use default",
                 this->module_config_.resolution);
       this->rgb_resolution_ = color_res_opts["720"];
     } else {
@@ -105,7 +111,7 @@ void FFC4PDriver::GetParameters(ros::NodeHandle& nh) {
   } else {
     if (mono_res_opts.find(this->module_config_.resolution) ==
         mono_res_opts.end()) {
-      ROS_ERROR("Resolution %d not supported, use default\n",
+      ROS_ERROR("Resolution %d not supported, use default",
                 this->module_config_.resolution);
       this->mono_resolution_ = mono_res_opts["720"];
     } else {
@@ -116,13 +122,15 @@ void FFC4PDriver::GetParameters(ros::NodeHandle& nh) {
 }
 
 int32_t FFC4PDriver::Init() {
-  // Init and Start pipeline
+  // Init XLink Pipeline
   this->pipeline_ = std::make_unique<dai::Pipeline>();
   this->pipeline_->setXLinkChunkSize(0);
-  auto sync = this->pipeline_->create<dai::node::Sync>();
-  auto xOut = this->pipeline_->create<dai::node::XLinkOut>();
+  auto sync = this->pipeline_->create<dai::node::Sync>(); // Create sync node
+  auto xOut = this->pipeline_->create<dai::node::XLinkOut>(); // create xlihk out node
   xOut->setStreamName("msgOut");
-  sync->out.link(xOut->input);
+  sync->out.link(xOut->input);  // connect xlink out to sync input.
+  
+  // create camera objects and connect to Xlink pipeline
   for (int i = 0; i < this->CameraList.size(); i++) {
     if (this->module_config_.rgb) {  // RGB camera
       auto rgb_cam = this->pipeline_->create<dai::node::ColorCamera>();
@@ -130,16 +138,20 @@ int32_t FFC4PDriver::Init() {
       rgb_cam->setBoardSocket(CameraList[i].socket);
       rgb_cam->setInterleaved(false);
       rgb_cam->setFps(this->module_config_.fps);
+      // connect isp to xlink out stream
       rgb_cam->isp.link(sync->inputs[CameraList[i].stream_name]);
+      // master cam sync by output while slave cams sync by input
       rgb_cam->initialControl.setFrameSyncMode(
           CameraList[i].is_master ? dai::CameraControl::FrameSyncMode::OUTPUT
                                   : dai::CameraControl::FrameSyncMode::INPUT);
+      // set exposure
       if (this->module_config_.auto_expose) {
         rgb_cam->initialControl.setAutoExposureEnable();
       } else {
         rgb_cam->initialControl.setManualExposure(
             this->module_config_.expose_time_us, this->module_config_.iso);
       }
+      // set white balance
       if (!this->module_config_.auto_awb) {
         rgb_cam->initialControl.setManualWhiteBalance(
             this->module_config_.awb_value);
@@ -167,30 +179,27 @@ int32_t FFC4PDriver::Init() {
       this->cam_mono_[CameraList[i].stream_name] = mono_cam;
     }
   }
+
+  // -----------------  start Xlink pipeline  ------------------------------ //
   this->device_->startPipeline(*this->pipeline_);
 
-  // create ros publisher
+  // -----------------  create ros publisher  ------------------------------- //
+  // expose time publisher
+  this->expose_time_publisher_ = this->ros_node_->advertise<std_msgs::Int32>(
+    "/oak_ffc_4p/expose_time_us", 1);
+  // accemble image publisher
+  this->assemble_image_publisher_ = 
+    this->it_ptr_->advertise("/oak_ffc_4p/assemble_image", 1);
+  // seperated image publisher
   if (this->module_config_.sharpness_calibration_mode) {
-    ROS_INFO("Sharpness Calibration mode\n");
+    ROS_INFO("Sharpness Calibration mode on, pub to sperated topics.");
     for (int i = 0; i < this->CameraList.size(); i++) {
       std::string topic_name = "/oak_ffc_4p/" + CameraList[i].stream_name;
-      ImagePubNode image_node(this->ros_node_, topic_name);
+      ImagePubNode image_node(this->it_ptr_, topic_name);
       image_pub_node_[CameraList[i].stream_name] = image_node;
     }
-  } else {
-    this->expose_time_publisher_ = this->ros_node_->advertise<std_msgs::Int32>(
-        "/oak_ffc_4p/expose_time_us", 1);
-    if (this->module_config_.compressed_mode) {
-      this->assemble_image_publisher_ =
-          this->ros_node_->advertise<sensor_msgs::CompressedImage>(
-              "/oak_ffc_4p/assemble_image/compressed", 1);
-      ROS_INFO("Create publish topic /oak_ffc_4p/assemble_image/compressed\n");
-    } else {
-      this->assemble_image_publisher_ =
-          this->ros_node_->advertise<sensor_msgs::Image>(
-              "/oak_ffc_4p/assemble_image", 1);
-    }
   }
+
   return 0;
 }
 
@@ -199,14 +208,14 @@ void FFC4PDriver::StartVideoStream() {
     this->ros_rate_ptr_ = std::make_unique<ros::Rate>(this->module_config_.fps);
     this->grab_thread_ = std::thread(&FFC4PDriver::RosGrabImgThread, this);
   } else {
-    printf("Use std thread\n");
     this->grab_thread_ = std::thread(&FFC4PDriver::StdGrabImgThread, this);
   }
-  ROS_INFO("Start streaming\n");
+  ROS_INFO("Start streaming");
   return;
 }
 
 void FFC4PDriver::RosGrabImgThread() {
+  ROS_INFO("Start grab thread with ROS rate control.");
   while (this->ros_node_->ok() && this->is_run_) {
     GrabImg();
     this->ros_rate_ptr_->sleep();
@@ -215,19 +224,21 @@ void FFC4PDriver::RosGrabImgThread() {
 }
 
 void FFC4PDriver::StdGrabImgThread() {
+  ROS_INFO("Start grab thread with std usleep control.");
   while (this->is_run_) {
     GrabImg();
     usleep(SECOND / (2.0f * this->module_config_.fps));
   }
-  ROS_INFO("Stop grab tread\n");
+  ROS_INFO("Stop grab tread");
 }
 
 void FFC4PDriver::GrabImg() {
   static cv_bridge::CvImage cv_img, assemble_cv_img;
   static std_msgs::Int32 expose_time_msg;
   static cv::Mat assemble_cv_mat = cv::Mat::zeros(720, 5120, CV_8UC3);
-  static auto const msgGrp = this->device_->getOutputQueue("msgOut", 1, false);
 
+  // grab one frame
+  static auto const msgGrp = this->device_->getOutputQueue("msgOut", 1, false);
   auto msg_data = msgGrp->get<dai::MessageGroup>();
   if (msg_data == nullptr) {
     return;
@@ -243,11 +254,17 @@ void FFC4PDriver::GrabImg() {
       image_pub_node_[camera.stream_name].cap_time_stamp =
           packet->getTimestamp();
       // image_pub_node_[camera.stream_name]->frame_counter++;
+      if (camera.stream_name == "CAM_A"){
+        expose_time_msg.data = 
+          static_cast<int32_t>(packet->getExposureTime().count());
+      }
     } else {
-      ROS_WARN("Get %s frame failed\n", camera.stream_name.c_str());
+      ROS_WARN("Get %s frame failed.", camera.stream_name.c_str());
       return;
     }
   }
+
+  // Publish images
   auto host_ros_now_time = ros::Time::now();
   assemble_cv_img.header.stamp = host_ros_now_time;
   assemble_cv_img.header.frame_id = "depth ai";
@@ -258,8 +275,6 @@ void FFC4PDriver::GrabImg() {
   cv_img.header.frame_id = "depth ai";
   cv_img.encoding = "bgr8";
 
-  expose_time_msg.data = this->module_config_.expose_time_us;
-
   auto host_time_now = dai::Clock::now();
   int colow_position = 0;
   if (this->module_config_.enable_upside_down) {
@@ -269,29 +284,28 @@ void FFC4PDriver::GrabImg() {
   }
 
   if (this->module_config_.sharpness_calibration_mode) {
-    // for (auto& image_node : this->image_pub_node_) {
-    //   cv_img.image = image_node.second.image;
-    //   image_node.second.ros_publisher_ptr->publish(
-    //       cv_img.toCompressedImageMsg());
-    // }
+    // pub seperated images
+    if (this->module_config_.show_img_local){
+      for (auto& image_node : image_pub_node_) {
+        this->ShowImg(image_node.second, host_time_now);
+      }
+    }
+    
+    for (auto& image_node : this->image_pub_node_) {
+      image_node.second.image.copyTo(cv_img.image);
+      image_node.second.ros_publisher_ptr->publish(cv_img.toImageMsg());
+    }
+    
   } else {
+    // pub accemble images
     for (auto& image_node : this->image_pub_node_) {
       image_node.second.image.copyTo(
           assemble_cv_img.image(cv::Rect(colow_position, 0, 1280, 720)));
       colow_position += IMAGE_WIDTH;
     }
-    if (this->module_config_.compressed_mode) {
-      assemble_image_publisher_.publish(assemble_cv_img.toCompressedImageMsg());
-    } else {
-      assemble_image_publisher_.publish(assemble_cv_img.toImageMsg());
-    }
-    this->expose_time_publisher_.publish(expose_time_msg);
+    assemble_image_publisher_.publish(assemble_cv_img.toImageMsg());
   }
-  if (this->module_config_.sharpness_calibration_mode) {
-    for (auto& image_node : image_pub_node_) {
-      this->ShowImg(image_node.second, host_time_now);
-    }
-  }
+  this->expose_time_publisher_.publish(expose_time_msg);
 }
 
 // TODO fps counter
