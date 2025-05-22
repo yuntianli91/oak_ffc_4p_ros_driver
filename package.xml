@@ -1,12 +1,10 @@
 <?xml version="1.0"?>
 <package format="2">
   <name>oak_ffc_4p_ros</name>
-  <version>0.0.0</version>
-  <description>The arducam_ros package based on v4l2</description>
+  <version>1.0.0</version>
+  <description>ROS driver pkg for OAK ffc_4p module </description>
 
-  <maintainer email="mortyl0834@gmail.com">dji</maintainer>
-
-
+  <maintainer email="yuntianlee91@hotmail.com">PML</maintainer>
   <license>LGPLv3</license>
 
   <buildtool_depend>catkin</buildtool_depend>

@@ -14,6 +14,8 @@
 #include <thread>
 #include <vector>
 
+#include <spdlog/spdlog.h>
+
 namespace OAKCAM {
 
 class FFC4PDriver {

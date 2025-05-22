@@ -1,0 +1,2 @@
+- setup-file:
+    local-name: /home/pml-omni/ros1_ws/src/driver-oak_ffc_4p_ros/build/devel/setup.sh

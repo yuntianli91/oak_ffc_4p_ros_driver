@@ -1,0 +1,29 @@
+<launch>
+  <!-- oak camera -->
+  <include file="$(find oak_ffc_4p_ros)/launch/OV9782.launch">
+    <arg name="show_img_local" default = "false" />
+    <arg name="fps" default = "30" />   
+    <arg name="rgb" default = "true" />
+    <arg name="resolution" default = "720"/>
+    <arg name="auto_expose" default = "false"/>
+    <arg name="expose_time_us" default = "10000"/>
+    <arg name="iso" default = "200"/>
+    <arg name="auto_awb" default = "false"/>
+    <arg name="awb_value" default = "3600"/>
+    <arg name="ros_defined_freq" default = "true"/>
+    <arg name="sharpness_calibration_mode" default = "false"/>
+    <arg name="compressed_mode" default= "true" />
+    <arg name="enable_upside_down" default = "true"/>
+  </include>
+
+  <!-- PX4 by mavros -->
+  <include file="$(find mavros)/launch/px4.launch">
+    <arg name="fcu_url" default="/dev/ttyTHS0:921600" />
+    <arg name="gcs_url" default="" />
+    <arg name="tgt_system" default="1" />
+    <arg name="tgt_component" default="1" />
+    <arg name="log_output" default="screen" />
+    <arg name="fcu_protocol" default="v2.0" />
+    <arg name="respawn_mavros" default="false" />
+  </include>
+</launch>
