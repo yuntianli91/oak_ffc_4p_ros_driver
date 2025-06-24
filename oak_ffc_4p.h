@@ -15,8 +15,13 @@
 #include <vector>
 
 #include <spdlog/spdlog.h>
+#include <dynamic_reconfigure/server.h>
+#include "oak_ffc_4p_ros/OAK_4PConfig.h"
 
 namespace OAKCAM {
+constexpr int EXP_STEP = 500;
+constexpr int ISO_STEP = 50;
+constexpr double PHOTOMETRIC_STEP = 200;  // ms
 
 class FFC4PDriver {
  public:
@@ -53,6 +58,7 @@ class FFC4PDriver {
     bool show_img_info = false;                 //
     bool auto_awb = false;                      // 是否启用自动白平衡
     bool sharpness_calibration_mode = false;    // 使用开启多摄像头分离显示模式
+    bool photometric_calibration_mode = false;  // 光度校准模式
     bool compressed_mode = false;               // 是否开启压缩图像模式
     bool enable_upside_down = false;            // 是否对图像进行上下颠倒
     int32_t fps = 30.0;                         // 图像帧率
@@ -145,6 +151,10 @@ class FFC4PDriver {
   void ShowImg(ImagePubNode& image_node,
                std::chrono::_V2::steady_clock::time_point& time_now);
 
+  void dynReconfigCb(oak_ffc_4p_ros::OAK_4PConfig &config, uint32_t level);
+
+  void photometricCalibrate();
+
   std::unique_ptr<dai::Pipeline> pipeline_ = nullptr; // Xlink pipelines
   std::unique_ptr<dai::Device> device_ = nullptr; // Xlink devices
 
@@ -154,6 +164,10 @@ class FFC4PDriver {
   std::map<std::string, std::shared_ptr<dai::node::MonoCamera>> cam_mono_;
   // ros pub nodes
   std::map<std::string, ImagePubNode> image_pub_node_;
+  // cam ctrl objects
+  std::map<std::string, std::shared_ptr<dai::node::XLinkIn>> cam_ctrls_;
+  // cam ctrl queue
+  std::vector<std::shared_ptr<dai::DataInputQueue>> ctrl_queues_;
 
   int32_t device_is_detected_ = 0;
   int32_t pipeline_is_init_ = 0;
@@ -170,11 +184,17 @@ class FFC4PDriver {
   std::unique_ptr<ros::Rate> ros_rate_ptr_ = nullptr;
   ros::Publisher expose_time_publisher_;
   image_transport::Publisher assemble_image_publisher_;  // to publish all camera images in
+  dynamic_reconfigure::Server<oak_ffc_4p_ros::OAK_4PConfig> dcfg_server_;
 
   // thread
   std::thread grab_thread_;
+  std::mutex mtx_cam_;
   bool is_run_ = true;
   // image_tmp
+
+  // photometric
+  uint32_t exp_ = 0;
+  uint32_t iso_ = 100;
 };
 
 double Clearness(cv::Mat& img);  // calculate clearness to manuel focus

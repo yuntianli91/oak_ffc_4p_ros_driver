@@ -11,6 +11,11 @@
 #include <map>
 #include <opencv2/opencv.hpp>
 
+// Manual exposure/focus set step
+static constexpr int EXP_STEP = 500;  // us
+static constexpr int ISO_STEP = 50;
+static constexpr int LENS_STEP = 3;
+static constexpr int WB_STEP = 200;
 // 定义帧率常量
 /*
  * mono 400p : max 50fps
@@ -206,6 +211,10 @@ std::string formatDuration(const std::chrono::steady_clock::duration duration) {
   return oss.str();
 }
 
+static int clamp(int num, int v0, int v1) {
+    return std::max(v0, std::min(num, v1));
+}
+
 int main() {
   dai::Device device;
 
@@ -226,6 +235,11 @@ int main() {
   auto xOut = pipeline.create<dai::node::XLinkOut>();
   xOut->setStreamName("msgOut");
   sync->out.link(xOut->input);
+
+  auto controlIn = pipeline.create<dai::node::XLinkIn>();
+  auto configIn = pipeline.create<dai::node::XLinkIn>();
+  controlIn->setStreamName("control");
+  configIn->setStreamName("config");
   // 遍历相机列表并配置管道
   for (const auto& cam_name : cam_list) {
     if (color) {
@@ -248,13 +262,24 @@ int main() {
                               : dai::CameraControl::FrameSyncMode::INPUT);
     }
   }
+  controlIn->out.link(camColor["CAM_A"]->inputControl);
 
   // 启动管道
   device.startPipeline(pipeline);
+  auto controlQueue = device.getInputQueue("control");
+  auto configQueue = device.getInputQueue("config");
 
   auto const msgGrp = device.getOutputQueue("msgOut", 4, false);
 
   FPSHandler fps_handler;
+
+  int expTime = 20000;
+  int expMin = 1;
+  int expMax = 33000;
+
+  int sensIso = 800;
+  int sensMin = 100;
+  int sensMax = 1600;
 
   while (true) {
     std::cout << "--------------------" << '\n';
@@ -277,8 +302,21 @@ int main() {
         cv::imshow(cam_name, frame);
       }
     }
-    if (cv::waitKey(1) == 'q') {
+
+    int key = cv::waitKey(1);
+    if (key == 'q') {
       break;
+    } else if(key == 'i' || key == 'o' || key == 'k' || key == 'l') {
+      if(key == 'i') expTime -= EXP_STEP;
+      if(key == 'o') expTime += EXP_STEP;
+      if(key == 'k') sensIso -= ISO_STEP;
+      if(key == 'l') sensIso += ISO_STEP;
+      expTime = clamp(expTime, expMin, expMax);
+      sensIso = clamp(sensIso, sensMin, sensMax);
+      printf("Setting manual exposure, time: %d, iso: %d\n", expTime, sensIso);
+      dai::CameraControl ctrl;
+      ctrl.setManualExposure(expTime, sensIso);
+      controlQueue->send(ctrl);
     }
   }
 

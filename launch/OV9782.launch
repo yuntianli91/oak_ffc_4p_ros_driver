@@ -3,17 +3,18 @@
     <arg name="fps" default = "30" />   
     <arg name="rgb" default = "true" />
     <arg name="resolution" default = "720"/>
-    <arg name="auto_expose" default = "fals3"/>
+    <arg name="auto_expose" default = "false"/>
     <arg name="expose_time_us" default = "10000"/>
     <arg name="iso" default = "200"/>
     <arg name="auto_awb" default = "false"/>
     <arg name="awb_value" default = "3600"/>
     <arg name="ros_defined_freq" default = "true"/>
-    <arg name="sharpness_calibration_mode" default = "true"/>
+    <arg name="sharpness_calibration_mode" default = "false"/>
+    <arg name="photometric_calibration_mode" default = "false"/>
     <!-- send compressed image instead of raw image -->
     <!-- if you want to visualize compressed img, make sure install image-transport-plugin -->
     <arg name="compressed_mode" default= "true" />
-    <arg name="enable_upside_down" default = "true"/>
+    <arg name="enable_upside_down" default = "false"/>
 
     <node name="oak_ffc_4p_ros" pkg="oak_ffc_4p_ros" type="oak_ffc_4p_ros_node" output="screen">
         <param name="show_img_local" value="$(arg show_img_local)" />
@@ -27,6 +28,7 @@
         <param name="awb_value" value = "$(arg awb_value)"/>
         <param name="ros_defined_freq" value = "$(arg ros_defined_freq)"/>
         <param name="sharpness_calibration_mode" value = "$(arg sharpness_calibration_mode)"/>
+        <param name="photometric_calibration_mode" value = "$(arg photometric_calibration_mode)"/>
         <param name="compressed_mode" value = "$(arg compressed_mode)" />
         <param name="enable_upside_down" value ="$(arg enable_upside_down)"/>
     </node>

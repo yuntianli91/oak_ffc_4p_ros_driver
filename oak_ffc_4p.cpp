@@ -95,6 +95,8 @@ void FFC4PDriver::GetParameters(ros::NodeHandle& nh) {
   nh.getParam("ros_defined_freq", this->module_config_.ros_defined_freq);
   nh.getParam("sharpness_calibration_mode",
               this->module_config_.sharpness_calibration_mode);
+  nh.getParam("photometric_calibration_mode", 
+              this->module_config_.photometric_calibration_mode);
   nh.getParam("compressed_mode", this->module_config_.compressed_mode);
   nh.getParam("enable_upside_down", this->module_config_.enable_upside_down);
 
@@ -125,13 +127,16 @@ int32_t FFC4PDriver::Init() {
   // Init XLink Pipeline
   this->pipeline_ = std::make_unique<dai::Pipeline>();
   this->pipeline_->setXLinkChunkSize(0);
+  
   auto sync = this->pipeline_->create<dai::node::Sync>(); // Create sync node
   auto xOut = this->pipeline_->create<dai::node::XLinkOut>(); // create xlihk out node
   xOut->setStreamName("msgOut");
   sync->out.link(xOut->input);  // connect xlink out to sync input.
-  
+
   // create camera objects and connect to Xlink pipeline
   for (int i = 0; i < this->CameraList.size(); i++) {
+    auto ctrl_in = this->pipeline_->create<dai::node::XLinkIn>();
+    ctrl_in->setStreamName(CameraList[i].stream_name);
     if (this->module_config_.rgb) {  // RGB camera
       auto rgb_cam = this->pipeline_->create<dai::node::ColorCamera>();
       rgb_cam->setResolution(this->rgb_resolution_);
@@ -156,7 +161,8 @@ int32_t FFC4PDriver::Init() {
         rgb_cam->initialControl.setManualWhiteBalance(
             this->module_config_.awb_value);
       }
-      this->cam_color_[CameraList[i].stream_name] = rgb_cam;
+      this->cam_color_[CameraList[i].stream_name] = rgb_cam;   
+      ctrl_in->out.link(rgb_cam->inputControl);
     } else {
       auto mono_cam = this->pipeline_->create<dai::node::MonoCamera>();
       mono_cam->setResolution(this->mono_resolution_);
@@ -177,11 +183,17 @@ int32_t FFC4PDriver::Init() {
             this->module_config_.awb_value);
       }
       this->cam_mono_[CameraList[i].stream_name] = mono_cam;
+      ctrl_in->out.link(mono_cam->inputControl);
     }
+    cam_ctrls_[CameraList[i].stream_name] = ctrl_in;
   }
-
+  
   // -----------------  start Xlink pipeline  ------------------------------ //
   this->device_->startPipeline(*this->pipeline_);
+  // get control queue
+  for (int i = 0; i < this->CameraList.size(); i++) {
+    ctrl_queues_.emplace_back(this->device_->getInputQueue(CameraList[i].stream_name));
+  }
 
   // -----------------  create ros publisher  ------------------------------- //
   // expose time publisher
@@ -200,6 +212,11 @@ int32_t FFC4PDriver::Init() {
     }
   }
 
+  // dynamic reconfigure
+  dynamic_reconfigure::Server<oak_ffc_4p_ros::OAK_4PConfig>::CallbackType f;
+  f = boost::bind(&FFC4PDriver::dynReconfigCb, this, _1, _2);
+  dcfg_server_.setCallback(f);
+
   return 0;
 }
 
@@ -216,8 +233,23 @@ void FFC4PDriver::StartVideoStream() {
 
 void FFC4PDriver::RosGrabImgThread() {
   ROS_INFO("Start grab thread with ROS rate control.");
+  static int count = 0;
+  if (module_config_.photometric_calibration_mode){
+    ROS_INFO("Photometric Calibration mode enabled!");
+  }
+
+  auto last_time = std::chrono::steady_clock::now();
   while (this->ros_node_->ok() && this->is_run_) {
     GrabImg();
+    auto curr_time = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    curr_time - last_time).count();
+    if (module_config_.photometric_calibration_mode && 
+        duration >= PHOTOMETRIC_STEP)
+    {
+      this->photometricCalibrate();
+      last_time = curr_time;
+    }  
     this->ros_rate_ptr_->sleep();
   }
   ROS_INFO("Stop grab tread\n");
@@ -225,8 +257,22 @@ void FFC4PDriver::RosGrabImgThread() {
 
 void FFC4PDriver::StdGrabImgThread() {
   ROS_INFO("Start grab thread with std usleep control.");
+  static int count = 0;
+  
+  if (module_config_.photometric_calibration_mode){
+    ROS_INFO("Photometric Calibration mode enabled!");
+  }
+
+  auto last_time = std::chrono::steady_clock::now();
   while (this->is_run_) {
-    GrabImg();
+    GrabImg();  
+    auto curr_time = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    curr_time - last_time).count();
+    if (module_config_.photometric_calibration_mode){
+      this->photometricCalibrate();
+      last_time = curr_time;
+    }  
     usleep(SECOND / (2.0f * this->module_config_.fps));
   }
   ROS_INFO("Stop grab tread");
@@ -243,6 +289,9 @@ void FFC4PDriver::GrabImg() {
   if (msg_data == nullptr) {
     return;
   }
+
+  std::unique_lock<std::mutex> lock(mtx_cam_, std::defer_lock);
+  lock.lock();
   for (const auto& camera : CameraList) {
     auto packet = msg_data->get<dai::ImgFrame>(camera.stream_name);
     if (packet) {
@@ -263,6 +312,7 @@ void FFC4PDriver::GrabImg() {
       return;
     }
   }
+  lock.unlock();
 
   // Publish images
   auto host_ros_now_time = ros::Time::now();
@@ -359,5 +409,49 @@ ros::Time convertToRosTime(
 
   return currentTime;
 };
+
+void FFC4PDriver::dynReconfigCb(oak_ffc_4p_ros::OAK_4PConfig &config, uint32_t level){
+  std::unique_lock<std::mutex> lock(mtx_cam_, std::defer_lock);
+  dai::CameraControl ctrlParam;
+  ctrlParam.setManualExposure(config.exposure_time, config.iso);
+  ctrlParam.setManualWhiteBalance(config.white_balance);
+  ROS_INFO("Reconfig params: enable: %d, iso: %d, exposure time: %dus, while balance: %dK.",
+              config.enable, config.iso, 
+              config.exposure_time, config.white_balance);
+  
+  if (config.enable == 1){
+    lock.lock();
+    for (int i = 0; i < this->CameraList.size(); i++) {
+        ctrl_queues_[i]->send(ctrlParam);
+      }
+    lock.unlock();
+  }
+}
+
+void FFC4PDriver::photometricCalibrate(){
+  dai::CameraControl ctrl_param;
+  if (this->exp_ <= 25000){
+    ctrl_param.setManualExposure(this->exp_, this->iso_);
+    for (int i = 0; i < this->CameraList.size(); i++) {
+        ctrl_queues_[i]->send(ctrl_param);
+    }
+    // ROS_INFO("CURRENT EXP: %d, ISO: %d.", this->exp_, this->iso_);
+    this->exp_ += EXP_STEP;
+    return;
+  }
+
+  if (this->iso_ <= 1600){
+    ctrl_param.setManualExposure(this->exp_, this->iso_);
+    for (int i = 0; i < this->CameraList.size(); i++) {
+        ctrl_queues_[i]->send(ctrl_param);
+    }
+    // ROS_INFO("CURRENT EXP: %d, ISO: %d.", this->exp_, this->iso_);
+    this->iso_ += ISO_STEP;  
+    return;
+  }
+
+  this->exp_ = 0;
+  this->iso_ = 100;
+}
 
 }  // namespace OAKCAM

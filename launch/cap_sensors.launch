@@ -13,7 +13,7 @@
     <arg name="ros_defined_freq" default = "true"/>
     <arg name="sharpness_calibration_mode" default = "false"/>
     <arg name="compressed_mode" default= "true" />
-    <arg name="enable_upside_down" default = "true"/>
+    <arg name="enable_upside_down" default = "false"/>
   </include>
 
   <!-- PX4 by mavros -->
